@@ -9,7 +9,7 @@ stub imprime `....WOODY....` sin libc, PIC para PIE.
 make                # genera stub/stub.bin
 ./src/stub/stub_test    # debe imprimir ....WOODY....
 objdump -D -b binary -m i386:x86-64 src/stub/stub.bin # verificar lea 0x..(%rip)
-strace ./stub/stub_test   # debe mostrar write(1,"....WOODY....\n",14)=14 + exit(0)
+strace ./src/stub/stub_test   # debe mostrar write(1,"....WOODY....\n",14)=14 + exit(0)
 ```
 
 ## Knowledge required
