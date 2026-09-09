@@ -12,6 +12,7 @@ $(STUB_BIN): $(STUB_ASM)
 	$(NASM) -f elf64 $< -o $(STUB_OBJ) 	# ensambla a objeto ELF64
 	ld $(STUB_OBJ) -o $(STUB_ELF)		# enlaza para probar standalone
 	objcopy -O binary -j .text $(STUB_ELF) $@ # extraer SOLO los bytes de .text
+	xxd -i $(STUB_BIN)
 
 # Embeber con xxd (más robusto para entrega)
 #src/stub/stub.h: $(STUB_BIN)
