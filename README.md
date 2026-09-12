@@ -21,5 +21,6 @@ strace ./src/stub/stub_test
 # mprotect(0x401000, 4096, PROT_READ|PROT_WRITE|PROT_EXEC)=0
 # exit(0)
 objdump -D -b binary -m i386:x86-64 src/stub/stub.bin  # verificar lea (%rip)
+```
 Siguiente - Tramo 3 (en curso)
 - Loop XOR sobre dummy para validar esqueleto de descifrado antes de portar BTEA (btea_decrypt)
