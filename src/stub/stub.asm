@@ -1,77 +1,214 @@
-; stub.asm - woody_woodpacker stub
-; TRAMO 3 VALIDADO (2026-09-16)
-; - write(1, "....WOODY....\n", 14) ✅
-; - mprotect(0x402000, 4096, RWX)=0 ✅
-; - XOR loop: dummy 0x90909090 -> 0xd2d2d2d2 ✅
-; - XOR auto-inverso: 0xd2d2d2d2 -> 0x90909090 ✅
-; - Esqueleto de btea_decrypt (inversa de btea_encrypt) validado
+; stub.asm - self-contained BTEA decrypting stub
 ;
-; NOTA Tramo 3: dummy está en .data (RW-), no en .text (R-X).
-; El .text de ld es READONLY (objdump -h lo confirma).
-; Si dummy estuviera en .text, "mov [rdi], bl" daría SIGSEGV.
-; En el stub real dentro de un ELF con PT_LOAD, mprotect(RWX)
-; sí funciona para .text — eso lo validaste en Tramo 2.
-; Para el test standalone, .data es writable sin mprotect.
+; This file is extracted as raw bytes from .text. The C packer must patch:
+;   STUB_KEY_OFFSET          16 bytes: four uint32_t key words
+;   STUB_ENC_DELTA_OFFSET     8 bytes: encrypted_vaddr - stub_vaddr
+;   STUB_ENC_LEN_OFFSET       8 bytes: encrypted length in bytes
+;   STUB_ENTRY_DELTA_OFFSET   8 bytes: original_entry_vaddr - stub_vaddr
+;
+; Addresses are stored as deltas from stub_base. This keeps the stub valid
+; for both ET_EXEC and PIE/ET_DYN binaries, where the load base may change.
+;
+; The old standalone fixtures were deliberately removed from the executable
+; flow. They were used to validate MX and BTEA before this generic version.
+; This final stub is not runnable by itself until the placeholders are patched.
 
 BITS 64
-section .text		; código ejecutable, lo que objcopy extraerá
-global _start		; símbolo de entrada para ld (no _main)
+section .text
+global _start
 
+stub_base:
 _start:
-	; --- 1. write(1, "....WOODY....\n", 14) - syscall 1 ---
-    ; ABI System V: rdi=arg1, rsi=arg2, rdx=arg3, rax=syscall_nr
-	mov rax, 1			; 1 = write (asm/unistd_64.h)
-	mov rdi, 1          ; fd 1 = stdout
-	lea rsi, [rel msg]  ; RIP-relative: funciona en PIE y ET_EXEC
-	mov rdx, 14         ; len = 14 bytes ("....WOODY....\n")
-	syscall				; escribe "....WOODY...."
+    ; Preserve callee-saved registers. The original program must see them
+    ; unchanged when control returns through the final jmp.
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
 
-    ; --- 2. mprotect (validado en Tramo 2) ---
-    ; En el stub real, mprotect hace .text R-X -> RWX para descifrar in-place.
-    ; Aquí mprotect apunta a .data (0x402000), no es necesario pero valida el flujo.
-	lea rdi, [rel dummy] ; dummy en .data (writable)
-	and rdi, ~0xFFF     ; alinea a página (0x1000 = 4096)
-	mov rsi, 0x1000     ; len = una página
-	mov rdx, 7          ; PROT_READ|WRITE|EXEC = 7 (RWX)
-	mov rax, 10         ; 10 = mprotect syscall
-	syscall             ; debe dar =0
+    ; write(1, "....WOODY....\n", 14)
+    ; syscall ABI: rax=syscall number, rdi/rsi/rdx=arguments.
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rel woody_msg]
+    mov rdx, 14
+    syscall
 
-    ; --- 3. XOR encrypt dummy in-place (Tramo 3 - VALIDADO) ---
-    ; Valida el esqueleto del loop de descifrado (btea_decrypt).
-    ; XOR es auto-inverso: xor 0x42 dos veces vuelve al original.
-    ; rdi = ptr a dummy, rcx = len, al = clave byte
-    ; El loop en ASM usa bl como temp para no pisar rdi ni rcx.
-    ; VALIDACIÓN: 0x90909090 -> 0xd2d2d2d2 -> 0x90909090
-    lea rdi, [rel dummy] ; rdi = dirección de dummy (.data, writable)
-    mov rcx, 0x1000      ; rcx = 4096 iteraciones
-    mov al, 0x42         ; clave: 0x90 ^ 0x42 = 0xd2
-encrypt_loop:
-    mov bl, [rdi]        ; bl = byte actual de dummy
-    xor bl, al           ; bl ^= clave (0x90 -> 0xd2)
-    mov [rdi], bl        ; escribe de vuelta (funciona porque .data es RW)
-    inc rdi              ; avanzar al siguiente byte
-    dec rcx              ; decrementar contador
-    jnz encrypt_loop     ; repetir hasta rcx=0
+    ; r15 = address of encrypted data at runtime.
+    ; C patches a delta, not an absolute address, so PIE remains valid.
+    lea r15, [rel stub_base]
+    add r15, [rel enc_delta]
 
-	; --- 4. exit(0) - syscall 60 ---
-    ; En woody final será jmp al original e_entry (no exit)
-	mov rax, 60			; 60 = exit
-	xor rdi, rdi		; exit code 0
-	syscall				; termina el proceso
+    ; r14 = number of uint32_t words. The C side must provide a length
+    ; divisible by four; its ELF padding policy belongs to the packer.
+    mov r14, [rel enc_len]
+    shr r14, 2
+    cmp r14, 2
+    jb .restore_registers       ; BTEA needs at least two words
 
-msg: db "....WOODY....", 10 ; 10 = '\n', total 14 bytes
+    ; mprotect(encrypted_range, RWX)
+    ; mprotect needs a page-aligned start and a length covering every page.
+    mov rdi, r15                 ; original start
+    and rdi, -0x1000             ; page_start = start & ~0xfff
+    mov rax, r14                 ; words -> bytes
+    shl rax, 2
+    mov rdx, r15                 ; end = data_start + data_length
+    add rdx, rax
+    add rdx, 0xfff
+    and rdx, -0x1000             ; rounded end
+    sub rdx, rdi                 ; aligned length
+    mov rsi, rdx
+    mov rdx, 7                   ; PROT_READ | PROT_WRITE | PROT_EXEC
+    mov rax, 10                  ; syscall mprotect
+    syscall
 
-; dummy en .data (RW-), NO en .text (R-X).
-; El .text de ld es READONLY (ver objdump -h del stub_test).
-; Si dummy estuviera en .text, "mov [rdi], bl" daría SIGSEGV.
-; En el stub real dentro de un ELF con PT_LOAD, mprotect(RWX)
-; sí funciona para .text — eso lo validaste en Tramo 2.
-; Para el test standalone, .data es writable sin mprotect.
-;
-; VALIDACIÓN Tramo 3 (gdb + strace):
-; - strace: write(1,...)=14, mprotect(0x402000,4096,RWX)=0, exit(0)
-; - gdb breakpoint after loop: x/4x 0x402000 = 0xd2d2d2d2 ✅
-; - gdb continue: x/4x 0x402000 = 0x90909090 ✅ (auto-inverso)
-; - rcx = 0 al terminar (4096 iteraciones completas)
-section .data
-dummy: times 0x1000 db 0x90 ; 4096 bytes a cifrar/descifrar
+    ; r8 = key, r13d = rounds, r12d = sum.
+    lea r8, [rel stub_key]
+
+    ; rounds = 6 + 52 / n
+    mov eax, 52
+    xor edx, edx                 ; dividend is edx:eax
+    div r14d
+    add eax, 6
+    mov r13d, eax
+
+    ; sum = rounds * DELTA, modulo 2^32.
+    mov eax, 0x9e3779b9         ; DELTA
+    imul eax, r13d
+    mov r12d, eax
+
+    ; y = v[0] is persistent state in the reference BTEA algorithm.
+    mov r11d, [r15]
+
+.outer_round:
+    ; e = (sum >> 2) & 3
+    mov r10d, r12d
+    shr r10d, 2
+    and r10d, 3
+
+    ; p = n - 1. The inner loop processes p=n-1 ... 1.
+    mov r9, r14
+    dec r9
+
+.inner_loop:
+    ; z = v[p - 1]. y remains the value from the previous iteration.
+    mov ebx, [r15 + r9*4 - 4]
+
+    ; MX = ((z>>5 ^ y<<2) + (y>>3 ^ z<<4))
+    ;      ^ ((sum^y) + (key[(p&3)^e] ^ z))
+    mov eax, ebx                 ; eax = z
+    shr eax, 5
+    mov ecx, r11d               ; ecx = y
+    shl ecx, 2
+    xor eax, ecx                 ; eax = (z>>5) ^ (y<<2)
+
+    mov ecx, r11d               ; ecx = y
+    shr ecx, 3
+    mov edx, ebx                 ; edx = z
+    shl edx, 4
+    xor ecx, edx                 ; ecx = (y>>3) ^ (z<<4)
+    add eax, ecx                 ; first half
+
+    mov edx, r12d               ; edx = sum
+    xor edx, r11d               ; edx = sum ^ y
+    mov edi, r9d                ; edi = p
+    and edi, 3
+    xor edi, r10d               ; edi = (p&3) ^ e
+    mov esi, [r8 + rdi*4]       ; esi = key[(p&3)^e]
+    xor esi, ebx                ; esi = key[...] ^ z
+    add edx, esi                ; second half
+    xor eax, edx                 ; eax = MX
+
+    ; y = v[p] -= MX; the new y is used by the next iteration.
+    mov ecx, [r15 + r9*4]
+    sub ecx, eax
+    mov [r15 + r9*4], ecx
+    mov r11d, ecx
+
+    dec r9
+    jnz .inner_loop
+
+    ; Final element of each round: z=v[n-1], y=v[0] -= MX.
+    ; Do not reload y before MX: BTEA intentionally keeps the previous y.
+    mov ebx, [r15 + r14*4 - 4]
+    xor r9d, r9d                 ; p = 0, so key index is e
+
+    mov eax, ebx
+    shr eax, 5
+    mov ecx, r11d
+    shl ecx, 2
+    xor eax, ecx
+    mov ecx, r11d
+    shr ecx, 3
+    mov edx, ebx
+    shl edx, 4
+    xor ecx, edx
+    add eax, ecx
+
+    mov edx, r12d
+    xor edx, r11d
+    mov edi, r10d               ; (0 & 3) ^ e == e
+    mov esi, [r8 + rdi*4]
+    xor esi, ebx
+    add edx, esi
+    xor eax, edx                 ; eax = MX
+
+    mov ecx, [r15]
+    sub ecx, eax
+    mov [r15], ecx
+    mov r11d, ecx
+
+    ; sum -= DELTA; repeat until rounds reaches zero.
+    sub r12d, 0x9e3779b9
+    dec r13d
+    jnz .outer_round
+
+    ; Restore encrypted segment permissions to R-X.
+    mov rdi, r15
+    and rdi, -0x1000
+    mov rax, r14
+    shl rax, 2                  ; data length in bytes
+    mov rdx, r15
+    add rdx, rax
+    add rdx, 0xfff
+    and rdx, -0x1000
+    sub rdx, rdi
+    mov rsi, rdx
+    mov rdx, 5                  ; PROT_READ | PROT_EXEC
+    mov rax, 10                 ; syscall mprotect
+    syscall
+
+.restore_registers:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+
+    ; Jump, do not call: preserve the original process stack exactly.
+    lea rax, [rel stub_base]
+    add rax, [rel entry_delta]
+    jmp rax
+
+woody_msg: db "....WOODY....", 10
+
+    ; Runtime-patched data. These bytes are part of the extracted shellcode.
+    ; C must patch them using the offsets documented below.
+    align 8, db 0x90
+stub_key:
+    times 16 db 0
+enc_delta:
+    dq 0
+enc_len:
+    dq 0
+entry_delta:
+    dq 0
+
+; Patch offsets relative to the first byte of stub.bin:
+STUB_KEY_OFFSET        equ stub_key - stub_base
+STUB_ENC_DELTA_OFFSET  equ enc_delta - stub_base
+STUB_ENC_LEN_OFFSET    equ enc_len - stub_base
+STUB_ENTRY_DELTA_OFFSET equ entry_delta - stub_base
+STUB_SIZE              equ $ - stub_base
+

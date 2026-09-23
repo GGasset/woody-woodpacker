@@ -1,33 +1,35 @@
-cc = cc
-NASM = nasm
+CC = cc
 CFLAGS = -Wall -Wextra -Werror
+NASM = nasm
+LD = ld
+OBJCOPY = objcopy
 
-STUB_ASM = src/stub/stub.asm 
-STUB_OBJ = src/stub/stub.o 
-STUB_ELF = src/stub/stub_test
-STUB_BIN = src/stub/stub.bin 
+.DEFAULT_GOAL := all
 
-# Regla crítica: stub.bim se genera siempre antes que woody_woodpacker
-$(STUB_BIN): $(STUB_ASM)
-	$(NASM) -f elf64 $< -o $(STUB_OBJ) 	# ensambla a objeto ELF64
-	ld $(STUB_OBJ) -o $(STUB_ELF)		# enlaza para probar standalone
-	objcopy -O binary -j .text $(STUB_ELF) $@ # extraer SOLO los bytes de .text
-	xxd -i $(STUB_BIN)
+STUB_ASM = src/stub/stub.asm
+STUB_OBJ = src/stub/stub.o
+STUB_LINKED = src/stub/stub_linked
+STUB_BIN = src/stub/stub.bin
 
-# Embeber con xxd (más robusto para entrega)
-#src/stub/stub.h: $(STUB_BIN)
-#	xxd -i $< > $@
+# The linked ELF only resolves internal relocations. It is not a runnable test
+# binary because the final stub needs its placeholders patched by the packer.
+$(STUB_OBJ): $(STUB_ASM)
+	$(NASM) -f elf64 $< -o $@
 
-#woody_woodpacker: src/main.c src/encryption/btea.c src/encryption/random.c src/stub/stub.h
-#	$(CC) $(CFLAGS) $^ -o $@
+$(STUB_LINKED): $(STUB_OBJ)
+	$(LD) $< -o $@
+
+$(STUB_BIN): $(STUB_LINKED)
+	$(OBJCOPY) -O binary -j .text $< $@
 
 all: $(STUB_BIN)
 
 clean:
-	rm -f $(STUB_OBJ) $(STUB_ELF) $(STUB_BIN)
+	rm -f $(STUB_OBJ) $(STUB_LINKED)
 
 fclean: clean
-#	rm -f woody_woodpacker
+	rm -f $(STUB_BIN) woody_woodpacker
 
 re: fclean all
+
 .PHONY: all clean fclean re
