@@ -253,7 +253,7 @@ int main(int argc, char **argv)
 	char *outfile = 0;
 	if (argc < 3)
 	{
-		char extension[] = "";
+		char extension[] = ".hacked";
 
 		size_t old_size = ft_strlen(argv[2]);
 		size_t new_size = old_size + ft_strlen(extension) + 1;
