@@ -6,12 +6,6 @@
 
 #include "stub_insertion.h"
 
-typedef struct 
-{
-	void *arr;
-	size_t len;
-} array_return;
-
 static size_t	min(size_t a, size_t b)
 {
 	return (a * (a <= b) + b * (b < a));
@@ -19,9 +13,9 @@ static size_t	min(size_t a, size_t b)
 
 size_t ft_strlen(char *s)
 {
-	size_t out = 0;
-	for (size_t i = 0; s && s[i]; i++);
-	return out;
+	size_t i = 0;
+	for (; s && s[i]; i++);
+	return i;
 }
 
 void	*ft_realloc(void *old, size_t old_len, size_t new_len, int free_old)
@@ -53,7 +47,6 @@ char *insert_padding(char *s, size_t s_len, size_t offset, size_t n_zeroed_bytes
 	size_t out_len = s_len + n_zeroed_bytes + 1;
 	char *out = malloc(out_len);
 	if (!out) { if (free_s) free(s); return 0;}
-	out[out_len] = 0;
 
 	for (size_t i = 0; i < offset; i++) out[i] = s[i];
 	for (size_t i = 0; i < n_zeroed_bytes; i++) out[offset + i] = 0;
@@ -79,8 +72,8 @@ char *mem_insert(char *s, size_t s_len, char *to_insert, size_t to_insert_len, s
 	for (size_t i = 0; i < to_insert_len; i++)
 		out[insert_offset + i] = to_insert[i];
 	
-	for (size_t i = insert_offset; i < s_len; i++)
-		out[insert_offset + to_insert_len + i] = s[i];
+	for (size_t i = 0; i < s_len - insert_offset; i++)
+		out[insert_offset + to_insert_len + i] = s[insert_offset + i];
 	
 ret:
 	if (free_s) free(s);
@@ -91,6 +84,9 @@ ret:
 
 array_return read_file(char *path)
 {
+	// Read 4KB per call
+	const size_t read_size = 1024 * 4;
+
 	array_return out;
 	out.arr = 0;
 	out.len = 0;
@@ -99,14 +95,17 @@ array_return read_file(char *path)
 	int fd = open(path, O_RDONLY);
 	if (fd < 0) return out;
 
-	
-	char tmp;
-	while (read(fd, &tmp, 1) > 0)
+	size_t actual_read = 0;
+	char buff[read_size];
+	for (size_t read_n = 0; (actual_read = read(fd, buff, read_size)) > 0; read_n++)
 	{
-		out.arr = ft_realloc(out.arr, out.len, out.len + 1, 1);
+		out.arr = ft_realloc(out.arr, out.len, out.len + actual_read, 1);
 		if (!out.arr) return out;
-		((char *)out.arr)[out.len] = tmp;
-		out.len++;
+		out.len += actual_read;
+
+		size_t read_start = read_size * read_n;
+		for (size_t i = 0; i < actual_read; i++) ((char *)out.arr)[read_start + i] = buff[i];
+
 	}
 
 	close(fd);
@@ -124,12 +123,11 @@ array_return insert_stub_elf64(array_return elf, unsigned char *stub, size_t stu
 	char *elf64 = elf.arr;
 	size_t elf64_len = elf.len;
 
-	if (!elf64 || !stub || stub_size) {free(elf.arr); ret.len = 1; return ret;}
+	if (!elf64 || !stub || !stub_size) {free(elf.arr); ret.len = 1; return ret;}
 
 	Elf64_Ehdr *hdr = (Elf64_Ehdr*)elf64;
-	if (hdr->e_ident[EI_MAG0] == 0x7f && hdr->e_ident[EI_MAG1] == 'E' && hdr->e_ident[EI_MAG2] == 'L' && hdr->e_ident[EI_MAG3] == 'F') {free(elf.arr); ret.len = 4; return ret;}
-	if (hdr->e_ident[EI_CLASS] != 2) {free(elf.arr); ret.len = 2; return ret;}
-
+	if ((hdr->e_ident[0] == "\177ELF"[0] && hdr->e_ident[1] == "\177ELF"[1] && hdr->e_ident[2] == "\177ELF"[2] && hdr->e_ident[3] == "\177ELF"[3]) == 0) {free(elf.arr); ret.len = 4; return ret;}
+	if (hdr->e_ident[EI_CLASS] != 2 || hdr->e_type != ET_EXEC) {free(elf.arr); ret.len = 2; return ret;}
 	// Insert new program header
 	size_t phdr_insert_off = hdr->e_phoff + hdr->e_phnum * hdr->e_phentsize;
 
@@ -150,6 +148,8 @@ array_return insert_stub_elf64(array_return elf, unsigned char *stub, size_t stu
 
 	hdr = out;
 	hdr->e_phnum++;
+	if (hdr->e_shoff > hdr->e_phoff) hdr->e_shoff += 0x1000;
+
 	Elf64_Phdr *p_hdrs = (Elf64_Phdr *)(out + hdr->e_phoff);
 
 	long max_vaddr_end = 0;
@@ -166,7 +166,7 @@ array_return insert_stub_elf64(array_return elf, unsigned char *stub, size_t stu
 		max_vaddr_end += (vaddr_end - max_vaddr_end) * (vaddr_end > max_vaddr_end);
 	}
 	for (size_t i = 0; i < hdr->e_shnum; i++)
-		(((Elf64_Shdr*)(out)) + hdr->e_shoff + i)->sh_offset += 0x1000;
+		(((Elf64_Shdr*)(((char*)out) + hdr->e_shoff)) + i)->sh_offset += 0x1000;
 
 
 	// Get next aligned vaddr
@@ -234,13 +234,13 @@ int main(int argc, char **argv)
 			printf("Input was null\n");
 			break;
 		case 2:
-			printf("Not a 64 bit elf\n");
+			printf("Not an executable 64 bit elf\n");
 			break;
 		case 3:
 			printf("Malloc error\n");
 			break;
 		case 4:
-			printf("Not an Elf file");
+			printf("Not an Elf file\n");
 			break;
 		case 0:
 		default:
@@ -255,18 +255,24 @@ int main(int argc, char **argv)
 	{
 		char extension[] = ".hacked";
 
-		size_t old_size = ft_strlen(argv[2]);
-		size_t new_size = old_size + ft_strlen(extension) + 1;
+		size_t old_size = ft_strlen(argv[1]);
+		size_t extension_size = ft_strlen(extension);
+		size_t new_size = old_size + extension_size + 1;
 
-		outfile = ft_realloc(argv[2], old_size, new_size, 1);
-		for (size_t i = old_size; outfile && i < new_size; i++) outfile[i] = extension[i - old_size];
+		outfile = ft_realloc(argv[1], old_size, new_size, 0);
+
+		for (size_t i = 0; outfile && i < extension_size; i++) outfile[old_size + i] = extension[i];
+
+
+		//for (size_t i = old_size; outfile && i < new_size; i++) outfile[i] = extension[i - old_size];
 	}
 	else outfile = ft_realloc(argv[3], ft_strlen(argv[3]) + 1, ft_strlen(argv[3]) + 1, 0);
-	if (outfile) {printf("Memory error while creating out file path\n"); free(elf.arr); return 0;}
+	if (!outfile) {printf("Memory error while creating out file path\n"); free(elf.arr); return 0;}
 
 	int outfd = open(outfile, O_CREAT | O_TRUNC | O_WRONLY);
 	if (!outfd) {printf("Error opening \"%s\"\n", outfile); free(outfile); free(elf.arr); return 0;}
 
+	printf("Writing to \"%s\"\n", outfile);
 	if (write(outfd, elf.arr, elf.len) < elf.len) {printf("Error writing to file.\n");}
 
 	close(outfd);
