@@ -155,7 +155,7 @@ array_return insert_stub_elf64(array_return elf, unsigned char *stub, size_t stu
 	long max_vaddr_end = 0;
 	// Modify program/section headers offset after header insertion
 	// Skip the added header
-	for (size_t i = 0; i < hdr->e_phnum - 1; i++)
+	for (size_t i = 0; i < hdr->e_phnum - 2; i++)
 	{
 		p_hdrs[i].p_offset += 0x1000;
 
@@ -175,12 +175,14 @@ array_return insert_stub_elf64(array_return elf, unsigned char *stub, size_t stu
 	// Get padding needed to insert into the next aligned file position
 	size_t padding_for_stub_alignment = 0x1000 - (elf64_len % 0x1000) % 0x1000;
 
-	Elf64_Phdr *inserted_header = &p_hdrs[hdr->e_phnum];
+	printf("offset: %lx | vaddr: %lx\n", elf64_len + padding_for_stub_alignment, new_vaddr);
+
+	Elf64_Phdr *inserted_header = &p_hdrs[hdr->e_phnum - 1];
 	inserted_header->p_type = PT_LOAD;
 	inserted_header->p_flags = PF_R | PF_X;
 	inserted_header->p_offset = elf64_len + padding_for_stub_alignment;
 	inserted_header->p_vaddr = new_vaddr;
-	inserted_header->p_paddr = 0;
+	inserted_header->p_paddr = new_vaddr;
 	inserted_header->p_filesz = stub_size;
 	inserted_header->p_memsz = stub_size;
 	inserted_header->p_align = 0x1000;
