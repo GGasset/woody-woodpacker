@@ -3,6 +3,7 @@
 #include "stdlib.h"
 #include "fcntl.h"
 #include "elf.h"
+#include "stdio.h"
 
 #include "stub_insertion.h"
 
@@ -67,7 +68,7 @@ char *mem_insert(char *s, size_t s_len, char *to_insert, size_t to_insert_len, s
 	out = ft_realloc(0, 0, out_len, 0);
 	if (!out) goto ret;
 	for (size_t i = 0; i < insert_offset; i++)
-		out[i] += s[i];
+		out[i] = s[i];
 
 	for (size_t i = 0; i < to_insert_len; i++)
 		out[insert_offset + i] = to_insert[i];
@@ -135,18 +136,17 @@ array_return insert_stub_elf64(array_return elf, unsigned char *stub, size_t stu
 
 	// On modern, typical, computers almost all alignment is of 4096bytes
 	size_t padding_size = 0x1000 - sizeof(Elf64_Phdr);
-	
 	char *out = 0;
 	out = insert_padding(elf64, elf64_len, phdr_insert_off, padding_size, free_elf);
 	if (!out) {ret.len = 3; return ret;}
 	elf64_len += padding_size;
 
-	out = mem_insert(out, elf64_len, &inserted_hdr, sizeof(inserted_hdr), phdr_insert_off, 1, 0);
+	out = mem_insert(out, elf64_len, (char*)&inserted_hdr, sizeof(inserted_hdr), phdr_insert_off, 1, 0);
 	if (!out) {ret.len = 3; return ret;}
 
 	elf64_len += sizeof(inserted_hdr);
 
-	hdr = out;
+	hdr = (Elf64_Ehdr*)out;
 	hdr->e_phnum++;
 	if (hdr->e_shoff > hdr->e_phoff) hdr->e_shoff += 0x1000;
 
@@ -157,9 +157,11 @@ array_return insert_stub_elf64(array_return elf, unsigned char *stub, size_t stu
 	// Skip the added header
 	for (size_t i = 0; i < hdr->e_phnum - 2; i++)
 	{
-		p_hdrs[i].p_offset += 0x1000;
+		if (p_hdrs[i].p_offset >= phdr_insert_off)
+			p_hdrs[i].p_offset += 0x1000;
 
-		if (p_hdrs[i].p_type != PT_LOAD) continue;
+		//if (p_hdrs[i].p_type != PT_LOAD) continue;
+		//if (p_hdrs[i].p_vaddr == 0) continue;
 
 		// Get max virtual address
 		size_t vaddr_end = p_hdrs[i].p_vaddr + p_hdrs[i].p_memsz;
@@ -175,7 +177,7 @@ array_return insert_stub_elf64(array_return elf, unsigned char *stub, size_t stu
 	// Get padding needed to insert into the next aligned file position
 	size_t padding_for_stub_alignment = 0x1000 - (elf64_len % 0x1000) % 0x1000;
 
-	printf("offset: %lx | vaddr: %lx\n", elf64_len + padding_for_stub_alignment, new_vaddr);
+	//printf("offset: %lx | vaddr: %lx\n", elf64_len + padding_for_stub_alignment, new_vaddr);
 
 	Elf64_Phdr *inserted_header = &p_hdrs[hdr->e_phnum - 1];
 	inserted_header->p_type = PT_LOAD;
@@ -199,7 +201,7 @@ array_return insert_stub_elf64(array_return elf, unsigned char *stub, size_t stu
 		out[elf64_len + i] = stub[i];
 	elf64_len += stub_size;
 
-	hdr = out;
+	hdr = (Elf64_Ehdr*)out;
 	hdr->e_entry = new_vaddr + stub_entry_offset;
 
 	ret.arr = out;
