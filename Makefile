@@ -27,6 +27,9 @@ all: $(STUB_BIN)
 test-stub:
 	CC="$(CC)" NASM="$(NASM)" python3 tests/test_stub_decryption.py
 
+test-stub-entry:
+	python3 tests/test_stub_entry.py
+
 clean:
 	rm -f $(STUB_OBJ) $(STUB_LINKED)
 
@@ -35,4 +38,4 @@ fclean: clean
 
 re: fclean all
 
-.PHONY: all clean fclean re test-stub
+.PHONY: all clean fclean re test-stub test-stub-entry
