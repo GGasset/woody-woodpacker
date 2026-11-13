@@ -24,6 +24,9 @@ $(STUB_BIN): $(STUB_LINKED)
 
 all: $(STUB_BIN)
 
+test-stub-entry:
+	python3 tests/test_stub_entry.py
+
 clean:
 	rm -f $(STUB_OBJ) $(STUB_LINKED)
 
@@ -32,4 +35,4 @@ fclean: clean
 
 re: fclean all
 
-.PHONY: all clean fclean re
+.PHONY: all clean fclean re test-stub-entry

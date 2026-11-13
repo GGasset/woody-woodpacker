@@ -19,9 +19,19 @@ global _start
 
 stub_base:
 _start:
-    ; Preserve callee-saved registers. The original program must see them
-    ; unchanged when control returns through the final jmp.
+    ; This is a process entry point, not a function call: preserve all GPRs,
+    ; in particular the dynamic linker's finalizer pointer in rdx.
+    push rax
     push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
     push r12
     push r13
     push r14
@@ -184,12 +194,24 @@ _start:
     pop r14
     pop r13
     pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
     pop rbx
 
-    ; Jump, do not call: preserve the original process stack exactly.
+    ; Save the destination below the restored stack, then restore rax too.
+    ; The indirect jump leaves rsp and the original stack contents untouched.
     lea rax, [rel stub_base]
     add rax, [rel entry_delta]
-    jmp rax
+    mov [rsp - 8], rax
+    pop rax
+    jmp [rsp - 16]
 
 woody_msg: db "....WOODY....", 10
 
@@ -211,4 +233,3 @@ STUB_ENC_DELTA_OFFSET  equ enc_delta - stub_base
 STUB_ENC_LEN_OFFSET    equ enc_len - stub_base
 STUB_ENTRY_DELTA_OFFSET equ entry_delta - stub_base
 STUB_SIZE              equ $ - stub_base
-
