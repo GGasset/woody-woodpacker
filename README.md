@@ -67,7 +67,7 @@ El stub presupone páginas de 4096 bytes y restaura siempre RX, no consulta los
 permisos originales. El futuro inserter debe validar que todas las páginas
 afectadas pueden restaurarse íntegramente a RX, además de verificar rangos,
 direcciones y solapamientos; de lo contrario debe rechazar el ELF. Este diseño
-se basa en el contrato propuesto en la PR #9 y está pendiente de integración.
+se basa en el contrato inicial de la PR #9 y está pendiente de integración.
 
 ## Knowledge required
 ### ELF64 binaries structure
