@@ -50,12 +50,15 @@ _start:
     lea r15, [rel stub_base]
     add r15, [rel enc_delta]
 
-    ; r14 = number of uint32_t words. The C side must provide a length
-    ; divisible by four; its ELF padding policy belongs to the packer.
+    ; Reject invalid lengths before calculating the page range or decrypting.
     mov r14, [rel enc_len]
+    cmp r14, 8
+    jb .fatal
+    cmp r14, 131068
+    ja .fatal
+    test r14, 3
+    jnz .fatal
     shr r14, 2
-    cmp r14, 2
-    jb .restore_registers       ; BTEA needs at least two words
 
     ; mprotect(encrypted_range, RWX)
     ; mprotect needs a page-aligned start and a length covering every page.
@@ -65,13 +68,17 @@ _start:
     shl rax, 2
     mov rdx, r15                 ; end = data_start + data_length
     add rdx, rax
+    jc .fatal
     add rdx, 0xfff
+    jc .fatal
     and rdx, -0x1000             ; rounded end
     sub rdx, rdi                 ; aligned length
     mov rsi, rdx
     mov rdx, 7                   ; PROT_READ | PROT_WRITE | PROT_EXEC
     mov rax, 10                  ; syscall mprotect
     syscall
+    test rax, rax
+    js .fatal
 
     ; r8 = key, r13d = rounds, r12d = sum.
     lea r8, [rel stub_key]
@@ -188,6 +195,8 @@ _start:
     mov rdx, 5                  ; PROT_READ | PROT_EXEC
     mov rax, 10                 ; syscall mprotect
     syscall
+    test rax, rax
+    js .fatal
 
 .restore_registers:
     pop r15
@@ -212,6 +221,13 @@ _start:
     mov [rsp - 8], rax
     pop rax
     jmp [rsp - 16]
+
+.fatal:
+    ; Never transfer control to the original entry after an essential failure.
+    mov eax, 231                 ; exit_group
+    mov edi, 1
+    syscall
+    ud2                          ; fail closed if the syscall is blocked
 
 woody_msg: db "....WOODY....", 10
 

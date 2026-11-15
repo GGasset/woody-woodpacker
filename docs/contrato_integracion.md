@@ -86,12 +86,11 @@ escribibles o tengan otros permisos incompatibles. El empaquetador debe
 verificar también el rango redondeado a páginas y sus desbordamientos. Soportar
 otros tamaños de página o permisos originales requiere ampliar el diseño.
 
-Como política objetivo, si falla cualquiera de los dos `mprotect`, el stub
-termina con error y no salta al entry original; tampoco descifra si falla el
-primero. El comportamiento ante fallo de `write` debe decidirse y probarse en
-#2. **Esto aún no está implementado:** el stub actual ignora los resultados
-de las syscalls. #2 debe implementar y probar esta política antes de considerar
-seguro el flujo integrado.
+Si falla cualquiera de los dos `mprotect`, el stub termina con código 1 y no
+salta al entry original; tampoco descifra si falla el primero. El stub rechaza
+longitudes inválidas y desbordamientos del rango redondeado a páginas. Ignora
+los errores de `write`: el mensaje es informativo. Estas políticas se prueban
+de forma aislada; aún no garantizan la seguridad del flujo integrado.
 
 ## Responsabilidades y validación
 
@@ -102,8 +101,8 @@ seguro el flujo integrado.
   no modificar el archivo original.
 - **Stub:** imprime el mensaje, cambia permisos, descifra con los parámetros
   recibidos, restaura permisos y salta al entry original, preservando el estado
-  de entrada documentado en el README. Recibe parámetros ya validados; las
-  comprobaciones de errores en ejecución son responsabilidad de #2.
+  de entrada documentado en el README. Recibe parámetros ya validados y comprueba
+  en ejecución las longitudes, el rango redondeado y los errores de `mprotect`.
 - **Pruebas:** las pruebas aisladas existentes cubren el algoritmo, los deltas
   de ambos signos y el estado de entrada, pero no la carga ELF. #6 debe probar
   ejecutables PIE y no PIE, dinámicos, argumentos, entorno, salidas y código de

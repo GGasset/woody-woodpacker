@@ -16,12 +16,12 @@ para guardar registros y la dirección de salto; no preserva su contenido previo
 
 No preserva los flags ni el estado de registros SIMD/FPU. Además, la prueba es
 aislada: no demuestra todavía la integración con el empaquetador. Los errores
-de `write` y `mprotect`, y la restauración de permisos originales distintos de
-R-X, no están gestionados. Como los cambios en el stub modifican sus offsets,
+de `write` se ignoran y no se restauran permisos originales distintos de RX.
+Como los cambios en el stub modifican sus offsets,
 la integración debe obtener de nuevo los offsets de los datos parcheables.
 
-Para comprobar el salto, los registros y la pila en las rutas con y sin
-descifrado, ejecutar `make test-stub-entry` (requiere Linux x86-64, Python 3,
+Para comprobar el salto, los registros y la pila tras el descifrado, ejecutar
+`make test-stub-entry` (requiere Linux x86-64, Python 3,
 NASM y `ld`). La prueba compara las entradas desde `argc` hasta el terminador
 del vector auxiliar, con argumentos y variables de entorno de ejemplo; no
 compara los bytes de las cadenas u otros datos apuntados por esas entradas.
@@ -52,6 +52,22 @@ después del stub. Los datos empiezan cerca de un límite de página; los tamañ
 mayores cubren múltiples páginas. El máximo probado corresponde al límite
 positivo del parámetro `short` de la implementación C. Esta prueba aislada no
 valida la integración ELF ni la preservación del estado inicial del proceso.
+
+El contrato provisional acepta longitudes cifradas múltiplos de cuatro entre
+8 y 131068 bytes inclusive. El stub rechaza otras longitudes y los desbordamientos
+del rango redondeado a páginas. Si falla cualquiera de los dos `mprotect`,
+termina el proceso con código 1 sin saltar al entry; si falla el primero,
+tampoco descifra. Se ignoran los errores de `write`: el mensaje es informativo.
+Las pruebas comprueban los permisos en `/proc/self/maps`, los desbordamientos y
+simulan errores de `mprotect` y `write` con seccomp. También comprueban el
+contenido antes y después del descifrado. Requieren que seccomp esté permitido
+y que `/proc/self/maps` sea accesible.
+
+El stub presupone páginas de 4096 bytes y restaura siempre RX, no consulta los
+permisos originales. El futuro inserter debe validar que todas las páginas
+afectadas pueden restaurarse íntegramente a RX, además de verificar rangos,
+direcciones y solapamientos; de lo contrario debe rechazar el ELF. Este diseño
+se basa en el contrato inicial de la PR #9 y está pendiente de integración.
 
 ## Knowledge required
 ### ELF64 binaries structure
