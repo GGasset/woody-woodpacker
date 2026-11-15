@@ -1,6 +1,10 @@
 # woody-woodpacker
 Create a simple virus that infects and encrypts ELF64 binaries using C
 
+El [contrato inicial de integración](docs/contrato_integracion.md) recoge las
+decisiones y restricciones previstas para conectar cifrado, stub e inserter;
+la integración completa todavía está pendiente.
+
 ## Estado de entrada del stub
 
 El stub preserva todos los registros generales x86-64, incluido `rdx` (que el
