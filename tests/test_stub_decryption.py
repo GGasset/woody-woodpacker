@@ -48,6 +48,25 @@ def main():
                                          f"status={result.returncode}: "
                                          f"stdout={result.stdout!r}, stderr={result.stderr!r}")
                 print(f"OK: {n} words, {'positive' if positive else 'negative'} deltas")
+        for name, value in [("TEST_LENGTH", str(n)) for n in
+                            (0, 4, 7, 9, 131069, 131072, 4294967304)] + [
+                                ("DENY_PROT", "7"), ("DENY_PROT", "5"),
+                                ("TEST_ADDRESS", "0xfffffffffffffffc"),
+                                ("TEST_ADDRESS", "0xfffffffffffffff0")]:
+            result = subprocess.run(
+                [str(harness), str(blob), "2", "1", *offsets],
+                env={**os.environ, name: value}, capture_output=True, timeout=10)
+            if result.returncode != 1 or result.stdout != b"....WOODY....\n" or result.stderr:
+                raise AssertionError(f"failure case {name}={value}: status={result.returncode}, "
+                                     f"stdout={result.stdout!r}, stderr={result.stderr!r}")
+            print(f"OK: rejected {name}={value}")
+        result = subprocess.run(
+            [str(harness), str(blob), "2049", "1", *offsets],
+            env={**os.environ, "DENY_WRITE": "1"}, capture_output=True, timeout=10)
+        if result.returncode or result.stdout or result.stderr:
+            raise AssertionError(f"write failure: status={result.returncode}, "
+                                 f"stdout={result.stdout!r}, stderr={result.stderr!r}")
+        print("OK: continued after write failure")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the real stub in an ELF fixture, with and without BTEA decryption."""
+"""Run the real stub in an ELF fixture and verify process entry state."""
 from pathlib import Path
 import argparse
 import subprocess
@@ -8,7 +8,7 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument("--stub", type=Path, default=root / "src/stub/stub.asm")
-parser.add_argument("--length", type=int, choices=(0, 8), action="append")
+parser.add_argument("--length", type=int, choices=(8,), action="append")
 args = parser.parse_args()
 stub = args.stub.read_text()
 patches = {
@@ -24,7 +24,7 @@ for original, replacement in patches.items():
 with tempfile.TemporaryDirectory(prefix="woody-stub-") as tmp:
     tmp = Path(tmp)
     (tmp / "patched_stub.asm").write_text(stub)
-    for length in args.length or (0, 8):
+    for length in args.length or (8,):
         obj, binary = tmp / "fixture.o", tmp / "fixture"
         subprocess.run(["nasm", "-f", "elf64", f"-DTEST_LEN={length}",
                         "-I", f"{tmp}/", str(root / "tests/stub_entry.asm"),
