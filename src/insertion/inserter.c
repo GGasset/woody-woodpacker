@@ -83,12 +83,12 @@ ret:
 	return out;
 }
 
-array_return read_file(char *path)
+arr read_file(char *path)
 {
 	// Read 4KB per call
 	const size_t read_size = 1024 * 4;
 
-	array_return out;
+	arr out;
 	out.arr = 0;
 	out.len = 0;
 
@@ -113,11 +113,50 @@ array_return read_file(char *path)
 	return out;
 }
 
+void adapt_to_phdr_insertion(arr elf, size_t alignment, size_t phdr_insert_off)
+{
+	Elf64_Ehdr *ehdr = (Elf64_Ehdr*)elf.arr;
+
+	ehdr->e_phnum++;
+	if (ehdr->e_shoff >= phdr_insert_off) ehdr->e_shoff += alignment;
+
+	Elf64_Phdr *phdrs = (Elf64_Phdr*)((char*)elf.arr + ehdr->e_phoff);
+	size_t n_phdrs = ehdr->e_phnum;
+
+	for (size_t pi = 0; pi < n_phdrs - 1; pi++)
+	{
+		phdrs[pi].p_offset += alignment * (phdrs[pi].p_offset >= phdr_insert_off);
+
+		if (phdrs[pi].p_type == PT_DYNAMIC)
+		{
+			size_t dtoff = phdrs[pi].p_offset;
+			Elf64_Dyn *dt = (Elf64_Dyn*)((char*)elf.arr + dtoff);
+			
+
+			Elf64_Sxword d_tag;
+			for (size_t di = 0; (d_tag = dt[di].d_tag) != DT_NULL; di++)
+			{
+				size_t ptr = dt[di].d_un.d_ptr;
+				//if (d_tag == DT_STRTAB || d_tag == DT_SYMTAB || d_tag == DT_VERNEED || d_tag == DT_VERSYM)
+				//	dt[di].d_un.d_ptr += alignment * (ptr >= phdr_insert_off);
+			}
+		}
+	}
+
+	// Adjust section header offsets
+	for (size_t i = 0; i < ehdr->e_shnum; i++)
+	{
+		Elf64_Shdr *shdrs = ((Elf64_Shdr*)(((char*)elf.arr) + ehdr->e_shoff));
+		shdrs[i].sh_offset += alignment * (shdrs[i].sh_offset >= phdr_insert_off);
+	}
+
+
+}
 
 // TODO: check memory accesses to the elf size
-array_return insert_stub_elf64(array_return elf, unsigned char *stub, size_t stub_size, size_t stub_entry_offset, int free_elf)
+arr insert_stub_elf64(arr elf, unsigned char *stub, size_t stub_size, size_t stub_entry_offset, int free_elf)
 {
-	array_return ret;
+	arr ret;
 	ret.arr = 0;
 	ret.len = 0;
 
@@ -135,7 +174,8 @@ array_return insert_stub_elf64(array_return elf, unsigned char *stub, size_t stu
 	Elf64_Phdr inserted_hdr;
 
 	// On modern, typical, computers almost all alignment is of 4096bytes
-	size_t padding_size = 0x1000 - sizeof(Elf64_Phdr);
+	size_t alignment = 0x1000;
+	size_t padding_size = alignment - sizeof(Elf64_Phdr);
 	char *out = 0;
 	out = insert_padding(elf64, elf64_len, phdr_insert_off, padding_size, free_elf);
 	if (!out) {ret.len = 3; return ret;}
@@ -147,35 +187,29 @@ array_return insert_stub_elf64(array_return elf, unsigned char *stub, size_t stu
 	elf64_len += sizeof(inserted_hdr);
 
 	hdr = (Elf64_Ehdr*)out;
-	hdr->e_phnum++;
-	if (hdr->e_shoff > hdr->e_phoff) hdr->e_shoff += 0x1000;
+
+	elf.arr = out;
+	elf.len = elf64_len;
+
+	adapt_to_phdr_insertion(elf, alignment, phdr_insert_off);;
 
 	Elf64_Phdr *p_hdrs = (Elf64_Phdr *)(out + hdr->e_phoff);
 
 	long max_vaddr_end = 0;
 	// Modify program/section headers offset after header insertion
 	// Skip the added header
-	for (size_t i = 0; i < hdr->e_phnum - 2; i++)
+	for (size_t i = 0; i < hdr->e_phnum - 1; i++)
 	{
-		if (p_hdrs[i].p_offset >= phdr_insert_off)
-			p_hdrs[i].p_offset += 0x1000;
-
-		//if (p_hdrs[i].p_type != PT_LOAD) continue;
-		//if (p_hdrs[i].p_vaddr == 0) continue;
-
 		// Get max virtual address
 		size_t vaddr_end = p_hdrs[i].p_vaddr + p_hdrs[i].p_memsz;
 		max_vaddr_end += (vaddr_end - max_vaddr_end) * (vaddr_end > max_vaddr_end);
 	}
-	for (size_t i = 0; i < hdr->e_shnum; i++)
-		(((Elf64_Shdr*)(((char*)out) + hdr->e_shoff)) + i)->sh_offset += 0x1000;
-
 
 	// Get next aligned vaddr
-	size_t new_vaddr = max_vaddr_end + (0x1000 - max_vaddr_end % 0x1000) % 0x1000;
+	size_t new_vaddr = max_vaddr_end + (alignment - max_vaddr_end % alignment) % alignment;
 
 	// Get padding needed to insert into the next aligned file position
-	size_t padding_for_stub_alignment = 0x1000 - (elf64_len % 0x1000) % 0x1000;
+	size_t padding_for_stub_alignment = alignment - (elf64_len % alignment) % alignment;
 
 	//printf("offset: %lx | vaddr: %lx\n", elf64_len + padding_for_stub_alignment, new_vaddr);
 
@@ -187,7 +221,7 @@ array_return insert_stub_elf64(array_return elf, unsigned char *stub, size_t stu
 	inserted_header->p_paddr = new_vaddr;
 	inserted_header->p_filesz = stub_size;
 	inserted_header->p_memsz = stub_size;
-	inserted_header->p_align = 0x1000;
+	inserted_header->p_align = alignment;
 
 	out = ft_realloc(out, elf64_len, elf64_len + padding_for_stub_alignment, 1);
 	if (!out) {ret.len = 3; return ret;}
@@ -224,7 +258,7 @@ int main(int argc, char **argv)
 
 	if (argc < 2) { printf("Usage: ./woody-woodpacker {infile} [outfile]\n"); return 0;}
 
-	array_return elf = read_file(argv[1]);
+	arr elf = read_file(argv[1]);
 
 	if (!elf.arr || !elf.len) {printf("Error while reading file.\n"); return 0;}
 
