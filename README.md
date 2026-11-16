@@ -1,42 +1,73 @@
 # woody-woodpacker
 Create a simple virus that infects and encrypts ELF64 binaries using C
 
-## Stub - Progreso
+El [contrato inicial de integración](docs/contrato_integracion.md) recoge las
+decisiones y restricciones previstas para conectar cifrado, stub e inserter;
+la integración completa todavía está pendiente.
 
-### Tramo 1 - Toolchain (pusheado)
-- `src/stub/stub.asm` imprime `....WOODY....` sin libc, PIC (`lea [rel]`)
-- Toolchain validado: `nasm -f elf64 -> ld -> objcopy -O binary -j .text`
+## Estado de entrada del stub
 
-### Tramo 2 - mprotect (pusheado)
-- Añade `mprotect(dummy, 0x1000, PROT_READ|WRITE|EXEC)` alineado a página (`and rdi, ~0xFFF`)
-- Valida que el stub puede hacer RW una página `R-X` (preparación para descifrar in-place)
+El stub preserva todos los registros generales x86-64, incluido `rdx` (que el
+cargador dinámico puede usar para entregar la función de finalización), y
+restaura `rsp` y el contenido original de la pila antes de saltar al entry
+original. Esto conserva `argc`, `argv`, el entorno, el vector auxiliar y la
+alineación con los que fue invocado. Utiliza espacio por debajo de `rsp`
+para guardar registros y la dirección de salto; no preserva su contenido previo.
 
-### Tramo 3 - XOR loop VALIDADO (pusheado)
-- Loop XOR in-place sobre `dummy` en `.data` (RW-)
-- Valida el esqueleto de `btea_decrypt` (auto-inverso)
-- `0x90909090` -> `0xd2d2d2d2` -> `0x90909090` (XOR 0x42 dos veces)
-- rcx=0 al terminar (4096 iteraciones)
-- El fallo de SIGSEGV de antes era porque `dummy` estaba en `.text` (R-X). Solución: `.data`
+No preserva los flags ni el estado de registros SIMD/FPU. Además, la prueba es
+aislada: no demuestra todavía la integración con el empaquetador. Los errores
+de `write` se ignoran y no se restauran permisos originales distintos de RX.
+Como los cambios en el stub modifican sus offsets,
+la integración debe obtener de nuevo los offsets de los datos parcheables.
 
-### Probar (desde la raíz)
+Para comprobar el salto, los registros y la pila tras el descifrado, ejecutar
+`make test-stub-entry` (requiere Linux x86-64, Python 3,
+NASM y `ld`). La prueba compara las entradas desde `argc` hasta el terminador
+del vector auxiliar, con argumentos y variables de entorno de ejemplo; no
+compara los bytes de las cadenas u otros datos apuntados por esas entradas.
+La ruta de descifrado comprueba que el bloque cambia, no que el resultado BTEA
+sea correcto. Para probar una versión anterior del stub se puede ejecutar
+`python3 tests/test_stub_entry.py --stub /ruta/al/stub.asm`.
+
+## Stub y pruebas de descifrado
+
+`make` genera `src/stub/stub.bin`. El stub necesita que el futuro inserter
+parchee la clave, la longitud y los desplazamientos antes de ejecutarlo.
+
+Para comprobarlo de forma aislada, desde la raíz:
+
 ```bash
-make                # genera src/stub/stub.bin y src/stub/stub_test
-./src/stub/stub_test
-# ....WOODY....
-strace ./src/stub/stub_test
-# write(1, "....WOODY....\n",14)=14
-# mprotect(0x402000, 4096, PROT_READ|PROT_WRITE|PROT_EXEC)=0
-# exit(0)
-objdump -D -b binary -m i386:x86-64 src/stub/stub.bin  # verificar lea (%rip)
-gdb ./src/stub/stub_test
-# break *0x401053, run, x/4x 0x402000, continue
-# 0xd2d2d2d2 -> 0x90909090 (auto-inverso)
+make test-stub
 ```
 
-### Siguiente - Tramo 4+
-- Portar `btea_decrypt` a ASM (el mismo esqueleto de loop, solo `xor 0x42` -> `MX`)
-- Inyectar stub en ELF con PT_LOAD + `mprotect` real
-- Parchear `enc_key`, `enc_addr`, `enc_len`, `orig_entry`
+Dependencias: Linux x86-64 con páginas de 4096 bytes, Python 3, NASM,
+compilador C, GNU binutils (`nm`, `objcopy` y `readelf`) y `make`. El entorno
+debe permitir `mprotect` con permisos de escritura y ejecución. Las pruebas
+compilan en un directorio temporal y no necesitan el inserter.
+
+Se cifra con `btea_encrypt` del proyecto y se verifica el contenido completo
+descifrado, el mensaje exacto y la ejecución del destino parcheado. Se prueban
+2, 3, 16, 1024, 2049 y 32767 palabras, con datos y destino tanto antes como
+después del stub. Los datos empiezan cerca de un límite de página; los tamaños
+mayores cubren múltiples páginas. El máximo probado corresponde al límite
+positivo del parámetro `short` de la implementación C. Esta prueba aislada no
+valida la integración ELF ni la preservación del estado inicial del proceso.
+
+El contrato provisional acepta longitudes cifradas múltiplos de cuatro entre
+8 y 131068 bytes inclusive. El stub rechaza otras longitudes y los desbordamientos
+del rango redondeado a páginas. Si falla cualquiera de los dos `mprotect`,
+termina el proceso con código 1 sin saltar al entry; si falla el primero,
+tampoco descifra. Se ignoran los errores de `write`: el mensaje es informativo.
+Las pruebas comprueban los permisos en `/proc/self/maps`, los desbordamientos y
+simulan errores de `mprotect` y `write` con seccomp. También comprueban el
+contenido antes y después del descifrado. Requieren que seccomp esté permitido
+y que `/proc/self/maps` sea accesible.
+
+El stub presupone páginas de 4096 bytes y restaura siempre RX, no consulta los
+permisos originales. El futuro inserter debe validar que todas las páginas
+afectadas pueden restaurarse íntegramente a RX, además de verificar rangos,
+direcciones y solapamientos; de lo contrario debe rechazar el ELF. Este diseño
+se basa en el contrato inicial de la PR #9 y está pendiente de integración.
 
 ## Knowledge required
 ### ELF64 binaries structure
