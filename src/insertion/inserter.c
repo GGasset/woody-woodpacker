@@ -127,7 +127,7 @@ void adapt_to_phdr_insertion(arr elf, size_t alignment, size_t phdr_insert_off)
 	{
 		phdrs[pi].p_offset += alignment * (phdrs[pi].p_offset >= phdr_insert_off);
 
-		if (phdrs[pi].p_type == PT_DYNAMIC)
+		if (phdrs[pi].p_type == PT_DYNAMIC) // If header points to dynamic linking section, go to dynamic table
 		{
 			size_t dtoff = phdrs[pi].p_offset;
 			Elf64_Dyn *dt = (Elf64_Dyn*)((char*)elf.arr + dtoff);
@@ -307,7 +307,8 @@ int main(int argc, char **argv)
 	else outfile = ft_realloc(argv[3], ft_strlen(argv[3]) + 1, ft_strlen(argv[3]) + 1, 0);
 	if (!outfile) {printf("Memory error while creating out file path\n"); free(elf.arr); return 0;}
 
-	int outfd = open(outfile, O_CREAT | O_TRUNC | O_WRONLY);
+	// Open file with correct permissions
+	int outfd = open(outfile, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IXUSR | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
 	if (!outfd) {printf("Error opening \"%s\"\n", outfile); free(outfile); free(elf.arr); return 0;}
 
 	printf("Writing to \"%s\"\n", outfile);
