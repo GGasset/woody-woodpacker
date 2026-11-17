@@ -7,6 +7,11 @@
 
 #include "stub_insertion.h"
 
+#ifndef true
+#define true 1
+#define false 0
+#endif
+
 static size_t	min(size_t a, size_t b)
 {
 	return (a * (a <= b) + b * (b < a));
@@ -83,6 +88,58 @@ ret:
 	return out;
 }
 
+char *mem_append_0s(char *s, size_t s_len, size_t n_zeros, int free_s)
+{
+	return insert_padding(s, s_len, s_len, n_zeros, free_s);
+}
+
+char *mem_append(char *s, size_t s_len, char *to_append, size_t to_append_len, int free_s, int free_to_append)
+{
+	return mem_insert(s, s_len, to_append, to_append_len, s_len, free_s, free_to_append);
+}
+
+// Inserts padding before and after the to_append blob to append the blob aligned and leave the string aligned
+arr append_aligned_mem(arr s, char *to_append, size_t to_append_len, int free_s, int free_to_append, size_t alignment, size_t *out_content_offset)
+{
+	char *tmp = 0;
+
+	if (!s.arr || !to_append)
+	{
+		goto fail;
+	}
+
+	size_t EOF_padding = (alignment - (s.len % alignment)) % alignment;
+
+	tmp = mem_append_0s(s.arr, s.len, EOF_padding, free_s);
+	s.arr = 0;
+	size_t tmp_len = s.len + EOF_padding;
+	if (!tmp) goto fail;
+
+	tmp = mem_append(tmp, tmp_len, to_append, to_append_len, true, free_to_append);
+	if (out_content_offset && tmp) *out_content_offset = tmp_len;
+	to_append = 0;
+	tmp_len += to_append_len;
+	if (!tmp) goto fail;
+
+	EOF_padding = (alignment - (s.len % alignment)) % alignment;
+	arr out;
+	out.arr = mem_append_0s(tmp, tmp_len, EOF_padding, true);
+	tmp = 0;
+	out.len = 0;
+
+	if (!out.arr) goto fail;
+	out.len = tmp_len + EOF_padding;
+
+	return out;
+
+fail:
+	// Do the free thing if specified by the user
+	free(tmp);
+	if (free_s) free(s.arr);
+	if (free_to_append) free(to_append);
+	return out;
+}
+
 arr read_file(char *path)
 {
 	// Read 4KB per call
@@ -113,148 +170,120 @@ arr read_file(char *path)
 	return out;
 }
 
-void adapt_to_phdr_insertion(arr elf, size_t alignment, size_t phdr_insert_off)
-{
-	Elf64_Ehdr *ehdr = (Elf64_Ehdr*)elf.arr;
-
-	ehdr->e_phnum++;
-	if (ehdr->e_shoff >= phdr_insert_off) ehdr->e_shoff += alignment;
-
-	Elf64_Phdr *phdrs = (Elf64_Phdr*)((char*)elf.arr + ehdr->e_phoff);
-	size_t n_phdrs = ehdr->e_phnum;
-
-	for (size_t pi = 0; pi < n_phdrs - 1; pi++)
-	{
-		phdrs[pi].p_offset += alignment * (phdrs[pi].p_offset >= phdr_insert_off);
-
-		if (phdrs[pi].p_type == PT_DYNAMIC) // If header points to dynamic linking section, go to dynamic table
-		{
-			size_t dtoff = phdrs[pi].p_offset;
-			Elf64_Dyn *dt = (Elf64_Dyn*)((char*)elf.arr + dtoff);
-			
-
-			Elf64_Sxword d_tag;
-			for (size_t di = 0; (d_tag = dt[di].d_tag) != DT_NULL; di++)
-			{
-				size_t ptr = dt[di].d_un.d_ptr;
-				//if (d_tag == DT_STRTAB || d_tag == DT_SYMTAB || d_tag == DT_VERNEED || d_tag == DT_VERSYM)
-				//	dt[di].d_un.d_ptr += alignment * (ptr >= phdr_insert_off);
-			}
-		}
-	}
-
-	// Adjust section header offsets
-	for (size_t i = 0; i < ehdr->e_shnum; i++)
-	{
-		Elf64_Shdr *shdrs = ((Elf64_Shdr*)(((char*)elf.arr) + ehdr->e_shoff));
-		shdrs[i].sh_offset += alignment * (shdrs[i].sh_offset >= phdr_insert_off);
-	}
-
-
-}
-
-// TODO: check memory accesses to the elf size
-arr insert_stub_elf64(arr elf, unsigned char *stub, size_t stub_size, size_t stub_entry_offset, int free_elf)
+// Creates a new program header table at the end
+arr append_stub_elf64(arr elf, unsigned char *stub, size_t stub_size, size_t stub_entry_offset, int free_elf)
 {
 	arr ret;
-	ret.arr = 0;
-	ret.len = 0;
+	ret.arr = elf.arr;
+	ret.len = elf.len;
 
 	char *elf64 = elf.arr;
-	size_t elf64_len = elf.len;
 
 	if (!elf64 || !stub || !stub_size) {free(elf.arr); ret.len = 1; return ret;}
 
 	Elf64_Ehdr *hdr = (Elf64_Ehdr*)elf64;
 	if ((hdr->e_ident[0] == "\177ELF"[0] && hdr->e_ident[1] == "\177ELF"[1] && hdr->e_ident[2] == "\177ELF"[2] && hdr->e_ident[3] == "\177ELF"[3]) == 0) {free(elf.arr); ret.len = 4; return ret;}
 	if (hdr->e_ident[EI_CLASS] != 2 || hdr->e_type != ET_EXEC) {free(elf.arr); ret.len = 2; return ret;}
-	// Insert new program header
-	size_t phdr_insert_off = hdr->e_phoff + hdr->e_phnum * hdr->e_phentsize;
 
-	Elf64_Phdr inserted_hdr;
+	
+	size_t prev_n_phdrs = hdr->e_phnum;
+	size_t n_phdrs = prev_n_phdrs + 1;
+
+
+
+	Elf64_Phdr *old_phdr_table = (Elf64_Phdr*)((char*)elf.arr + hdr->e_phoff);
+	Elf64_Phdr new_phdr_table[n_phdrs];
+	size_t table_size = sizeof(Elf64_Phdr) * n_phdrs;
+
+	for (size_t i = 0; i < prev_n_phdrs; i++)
+		new_phdr_table[i] = old_phdr_table[i];
+
+	char *to_append = mem_append((char*)new_phdr_table, table_size, (char*)stub, stub_size, false, false);
+	size_t to_append_len = table_size + stub_size;
 
 	// On modern, typical, computers almost all alignment is of 4096bytes
 	size_t alignment = 0x1000;
-	size_t padding_size = alignment - sizeof(Elf64_Phdr);
-	char *out = 0;
-	out = insert_padding(elf64, elf64_len, phdr_insert_off, padding_size, free_elf);
-	if (!out) {ret.len = 3; return ret;}
-	elf64_len += padding_size;
 
-	out = mem_insert(out, elf64_len, (char*)&inserted_hdr, sizeof(inserted_hdr), phdr_insert_off, 1, 0);
-	if (!out) {ret.len = 3; return ret;}
-
-	elf64_len += sizeof(inserted_hdr);
-
-	hdr = (Elf64_Ehdr*)out;
-
-	elf.arr = out;
-	elf.len = elf64_len;
-
-	adapt_to_phdr_insertion(elf, alignment, phdr_insert_off);;
-
-	Elf64_Phdr *p_hdrs = (Elf64_Phdr *)(out + hdr->e_phoff);
+	size_t phoff = 0;
+	elf = append_aligned_mem(elf, to_append, to_append_len, free_elf, true, alignment, &phoff);
+	if (!elf.arr) return elf;
+	elf64 = elf.arr;
+	hdr = (Elf64_Ehdr*)elf64;
 
 	long max_vaddr_end = 0;
 	// Modify program/section headers offset after header insertion
 	// Skip the added header
-	for (size_t i = 0; i < hdr->e_phnum - 1; i++)
+	for (size_t i = 0; i < hdr->e_phnum; i++)
 	{
 		// Get max virtual address
-		size_t vaddr_end = p_hdrs[i].p_vaddr + p_hdrs[i].p_memsz;
+		size_t vaddr_end = new_phdr_table[i].p_vaddr + new_phdr_table[i].p_memsz;
 		max_vaddr_end += (vaddr_end - max_vaddr_end) * (vaddr_end > max_vaddr_end);
 	}
 
 	// Get next aligned vaddr
 	size_t new_vaddr = max_vaddr_end + (alignment - max_vaddr_end % alignment) % alignment;
 
-	// Get padding needed to insert into the next aligned file position
-	size_t padding_for_stub_alignment = alignment - (elf64_len % alignment) % alignment;
+	hdr->e_phoff = phoff;
+	hdr->e_phnum = n_phdrs;
+	hdr->e_entry = new_vaddr + table_size + stub_entry_offset;
 
-	//printf("offset: %lx | vaddr: %lx\n", elf64_len + padding_for_stub_alignment, new_vaddr);
+	size_t aligned_to_append_size = to_append_len + (alignment - (to_append_len % alignment)) % alignment;
 
-	Elf64_Phdr *inserted_header = &p_hdrs[hdr->e_phnum - 1];
-	inserted_header->p_type = PT_LOAD;
-	inserted_header->p_flags = PF_R | PF_X;
-	inserted_header->p_offset = elf64_len + padding_for_stub_alignment;
-	inserted_header->p_vaddr = new_vaddr;
-	inserted_header->p_paddr = new_vaddr;
-	inserted_header->p_filesz = stub_size;
-	inserted_header->p_memsz = stub_size;
-	inserted_header->p_align = alignment;
+	Elf64_Phdr new_phdr;
+	new_phdr.p_align = alignment;
+	new_phdr.p_offset = phoff;
+	new_phdr.p_filesz = to_append_len;
+	new_phdr.p_memsz = to_append_len;
+	new_phdr.p_type = PT_LOAD;
+	new_phdr.p_flags = PF_R | PF_X;
+	new_phdr.p_vaddr = new_vaddr;
+	new_phdr.p_paddr = new_vaddr;
 
-	out = ft_realloc(out, elf64_len, elf64_len + padding_for_stub_alignment, 1);
-	if (!out) {ret.len = 3; return ret;}
+	Elf64_Phdr *phdr_table = ((Elf64_Phdr*)((char*)elf.arr + phoff));
+	Elf64_Phdr *appended_phdr = phdr_table + prev_n_phdrs;
+	*appended_phdr = new_phdr;
 
-	elf64_len += padding_for_stub_alignment;
+	for (size_t i = 0; i < hdr->e_phnum; i++)
+	{
+		char *section_ptr = (char*)elf.arr + phdr_table[i].p_offset;
 
-	out = ft_realloc(out, elf64_len, elf64_len + stub_size, 1);
-	if (!out) {ret.len = 3; return ret;}
+		switch (phdr_table[i].p_type)
+		{
+		case PT_PHDR:
+		{
+			Elf64_Phdr *phdr = phdr_table + i;
+			phdr->p_align = alignment;
+			phdr->p_offset = phoff;
+			phdr->p_filesz = table_size;
+			phdr->p_memsz = table_size;
+			phdr->p_type = PT_PHDR;
+			phdr->p_flags = PF_R;
+			phdr->p_vaddr = new_vaddr;
+			phdr->p_paddr = new_vaddr;
 
-	for (size_t i = 0; i < stub_size; i++)
-		out[elf64_len + i] = stub[i];
-	elf64_len += stub_size;
+			printf("%zx\n", phoff);
+			break;
+		}
+		
+		default:
+			break;
+		}
+	}
 
-	hdr = (Elf64_Ehdr*)out;
-	hdr->e_entry = new_vaddr + stub_entry_offset;
-
-	ret.arr = out;
-	ret.len = elf64_len;
-
-	return ret;
+	return elf;
 }
 
 #include "stdio.h"
 
 int main(int argc, char **argv)
 {
-	unsigned char src_stub_stub_bin[] = {
+	unsigned char src_stub_bin[] = {
 		0xb8, 0x01, 0x00, 0x00, 0x00, 0x48, 0x8d, 0x35, 0x16, 0x00, 0x00, 0x00,
 		0xbf, 0x01, 0x00, 0x00, 0x00, 0xba, 0x0e, 0x00, 0x00, 0x00, 0x0f, 0x05,
 		0xb8, 0x3c, 0x00, 0x00, 0x00, 0x48, 0x31, 0xff, 0x0f, 0x05, 0x2e, 0x2e,
 		0x2e, 0x2e, 0x57, 0x4f, 0x4f, 0x44, 0x59, 0x2e, 0x2e, 0x2e, 0x2e, 0x0a
 	};
-	unsigned int src_stub_stub_bin_len = 48;
+	unsigned int src_stub_bin_len = 48;
 
 	if (argc < 2) { printf("Usage: ./woody-woodpacker {infile} [outfile]\n"); return 0;}
 
@@ -262,7 +291,8 @@ int main(int argc, char **argv)
 
 	if (!elf.arr || !elf.len) {printf("Error while reading file.\n"); return 0;}
 
-	elf = insert_stub_elf64(elf, src_stub_stub_bin, src_stub_stub_bin_len, 0, 1);
+	//elf = insert_stub_elf64(elf, src_stub_stub_bin, src_stub_stub_bin_len, 0, 1);
+	elf = append_stub_elf64(elf, src_stub_bin, src_stub_bin_len, 0, true);
 	if (!elf.arr)
 	{
 		printf("Error while processing and injecting to file. ");
@@ -308,8 +338,8 @@ int main(int argc, char **argv)
 	if (!outfile) {printf("Memory error while creating out file path\n"); free(elf.arr); return 0;}
 
 	// Open file with correct permissions
-	int outfd = open(outfile, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IXUSR | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
-	if (!outfd) {printf("Error opening \"%s\"\n", outfile); free(outfile); free(elf.arr); return 0;}
+	int outfd = open(outfile, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IXUSR | S_IWUSR | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
+	if (outfd < 0) {printf("Error opening \"%s\"\n", outfile); free(outfile); free(elf.arr); return 0;}
 
 	printf("Writing to \"%s\"\n", outfile);
 	if (write(outfd, elf.arr, elf.len) < elf.len) {printf("Error writing to file.\n");}
