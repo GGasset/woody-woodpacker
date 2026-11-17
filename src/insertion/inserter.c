@@ -191,6 +191,7 @@ arr append_stub_elf64(arr elf, unsigned char *stub, size_t stub_size, size_t stu
 
 
 
+	// Copy table to stack to modify it better
 	Elf64_Phdr *old_phdr_table = (Elf64_Phdr*)((char*)elf.arr + hdr->e_phoff);
 	Elf64_Phdr new_phdr_table[n_phdrs];
 	size_t table_size = sizeof(Elf64_Phdr) * n_phdrs;
@@ -198,12 +199,14 @@ arr append_stub_elf64(arr elf, unsigned char *stub, size_t stub_size, size_t stu
 	for (size_t i = 0; i < prev_n_phdrs; i++)
 		new_phdr_table[i] = old_phdr_table[i];
 
+	// append stub to table
 	char *to_append = mem_append((char*)new_phdr_table, table_size, (char*)stub, stub_size, false, false);
 	size_t to_append_len = table_size + stub_size;
 
 	// On modern, typical, computers almost all alignment is of 4096bytes
 	size_t alignment = 0x1000;
 
+	// Insert table and stub
 	size_t phoff = 0;
 	elf = append_aligned_mem(elf, to_append, to_append_len, free_elf, true, alignment, &phoff);
 	if (!elf.arr) return elf;
@@ -211,8 +214,6 @@ arr append_stub_elf64(arr elf, unsigned char *stub, size_t stub_size, size_t stu
 	hdr = (Elf64_Ehdr*)elf64;
 
 	long max_vaddr_end = 0;
-	// Modify program/section headers offset after header insertion
-	// Skip the added header
 	for (size_t i = 0; i < hdr->e_phnum; i++)
 	{
 		// Get max virtual address
@@ -223,6 +224,7 @@ arr append_stub_elf64(arr elf, unsigned char *stub, size_t stub_size, size_t stu
 	// Get next aligned vaddr
 	size_t new_vaddr = max_vaddr_end + (alignment - max_vaddr_end % alignment) % alignment;
 
+	// Update elf header
 	hdr->e_phoff = phoff;
 	hdr->e_phnum = n_phdrs;
 	hdr->e_entry = new_vaddr + table_size + stub_entry_offset;
@@ -243,6 +245,7 @@ arr append_stub_elf64(arr elf, unsigned char *stub, size_t stub_size, size_t stu
 	Elf64_Phdr *appended_phdr = phdr_table + prev_n_phdrs;
 	*appended_phdr = new_phdr;
 
+	// Update program headers
 	for (size_t i = 0; i < hdr->e_phnum; i++)
 	{
 		char *section_ptr = (char*)elf.arr + phdr_table[i].p_offset;
